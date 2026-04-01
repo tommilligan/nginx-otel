@@ -42,6 +42,7 @@ http {
         server_name  localhost;
 
         location /ok {
+            client_max_body_size 1K;
             return 200 "OK";
         }
 
@@ -329,3 +330,35 @@ def test_tls_export(client, trace_service):
     assert client.get("http://127.0.0.1:18080/ok").status_code == 200
 
     assert trace_service.get_span().name == "/ok"
+
+
+@pytest.mark.parametrize(
+    ("body_size", "status"),
+    [(20, 200), (2000, 413)],
+)
+def test_error_page_emits_telemetry(client, trace_service, body_size, status):
+    http_ver = "1.1"
+    scheme = "http"
+    path = "/ok"
+    port = 18080
+    r = client.post(
+        f"{scheme}://127.0.0.1:{port}{path}", verify=False, data="A" * body_size
+    )
+    assert r.status_code == status
+
+    span = trace_service.get_span()
+    assert span.name == path
+
+    assert get_attr(span, "http.method") == "POST"
+    assert get_attr(span, "http.target") == path
+    assert get_attr(span, "http.route") == path
+    assert get_attr(span, "http.scheme") == scheme
+    assert get_attr(span, "http.flavor") == http_ver
+    assert get_attr(span, "http.user_agent") == (f"niquests/{niquests.__version__}")
+    assert get_attr(span, "http.request_content_length") == 0
+    assert get_attr(span, "http.response_content_length") == len(r.text)
+    assert get_attr(span, "http.status_code") == status
+    assert get_attr(span, "net.host.name") == "localhost"
+    assert get_attr(span, "net.host.port") == port
+    assert get_attr(span, "net.sock.peer.addr") == "127.0.0.1"
+    assert get_attr(span, "net.sock.peer.port") in range(1024, 65536)
